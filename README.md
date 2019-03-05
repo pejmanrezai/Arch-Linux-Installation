@@ -9,4 +9,4 @@ You just need to do the following:<br />
 * then run the **Auto_chroot**<br />
 
 for more info, visit my github:<br />
-https://www.github.com/pejmanrezai/arch-installation/master
+https://www.github.com/pejmanrezai/Arch-Linux-Installation/master
