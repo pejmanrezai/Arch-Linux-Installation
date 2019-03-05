@@ -246,9 +246,9 @@ sleep 10
 if [ -e ./auto_chroot ];then
   cp ./auto_chroot /mnt/tmp/auto_chroot
 elif [[ $(ping -c 2 google.com) ]];then
-	echo -e "${purple}Downloading auto_chroot script from raw.githubusercontent.com/pejmanrezai/arch-installation/master/auto_chroot in ${green}/mnt/tmp/auto_chroot${colorOff}" 
+	echo -e "${purple}Downloading auto_chroot script from raw.githubusercontent.com/pejmanrezai/Arch-Linux-Installation/master/auto_chroot in ${green}/mnt/tmp/auto_chroot${colorOff}" 
 	sleep 3
-	curl -s -o /mnt/tmp/auto_chroot https://raw.githubusercontent.com/pejmanrezai/arch-installation/master/auto_chroot
+	curl -s -o /mnt/tmp/auto_chroot https://raw.githubusercontent.com/pejmanrezai/Arch-Linux-Installation/master/auto_chroot
 	chmod +x /mnt/tmp/auto_chroot
 fi
 
