@@ -178,10 +178,11 @@ prepare(){
 }
 
 
-
-main(){
-    prepare
-}
+if [ "$1" != '' ];then
+    case $1 in
+        "--prepare")
+            prepare
+fi
 
 
 
