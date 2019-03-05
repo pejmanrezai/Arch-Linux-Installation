@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+
+
+#### Created with love by Pejman Rezaei under MIT license github.com/pejmanrezai
+clear
+# Define colors
+# Reset
+colorOff='\033[0m'       # Text Reset
+# Regular Colors
+red='\033[0;31m'          # red
+green='\033[0;32m'        # green
+yellow='\033[0;33m'       # yellow
+blue='\033[0;34m'         # blue
+white='\033[0;37m'        # white
+purple='\033[0;35m'       # purple
+
+# Arch Automator ascii art
+echo -e """${blue} 
+                **                    **            **               **                                    **                  
+    ****                  /**           ****             /**                                   /**                  
+   **//**   ******  ***** /**          **//**   **   ** ******  ******  **********   ******   ******  ******  ******
+  **  //** //**//* **///**/******     **  //** /**  /**///**/  **////**//**//**//** //////** ///**/  **////**//**//*
+ ********** /** / /**  // /**///**   **********/**  /**  /**  /**   /** /** /** /**  *******   /**  /**   /** /** / 
+/**//////** /**   /**   **/**  /**  /**//////**/**  /**  /**  /**   /** /** /** /** **////**   /**  /**   /** /**   
+/**     /**/***   //***** /**  /**  /**     /**//******  //** //******  *** /** /**//********  //** //****** /***   
+//      // ///     /////  //   //   //      //  //////    //   //////  ///  //  //  ////////    //   //////  ///    
+
+${colorOff}
+"""
+sleep 5
+
+#########################################Installation#####################################################
+
+#Before using cryptsetup, always make sure the dm_crypt kernel module is loaded.
+modprobe dm-crypt
+modprobe dm-mod
+
+lsblk
+sleep 10
+
+### how to check esp partition exists?
+
+
+##################################### gdisk usage ########################################
+# Use "o" to create GPT table
+# "n" to create partitions:
+# Number    Start (sector) End (sector)    Size    code    name
+#   1       2048            1050623     512.0 MiB   EF00    EFI system
+#   2       1050624         1460223     500.0 MiB   8300    Linux flesysetm
+#   3       1460224         1679181823  800.0 GiB   8E00    Linux LVM
+# “w” to write changes
+# "q" to quit
+
+
+
+color(){
+    case $1 in
+        red)
+            echo -e "\033[31m$2\033[0m"
+        ;;
+        green)
+            echo -e "\033[32m$2\033[0m"
+        ;;
+    esac
+}
+
+
+
+partition(){
+    if (echo $1 | grep '/' > /dev/null 2>&1);then
+        other=$1
+    else
+        other=/$1
+    fi
+
+    fdisk -l
+    color green "Input the partition (/dev/sdXY)"
+    read OTHER
+    color green "Format it ? y)yes ENTER)no"
+    read tmp
+
+    if [ "$other" == "/boot" ];then
+        boot=$OTHER
+    fi
+
+    if [ "$tmp" == y ];then
+        umount $OTHER > /dev/null 2>&1
+        color green "Input the filesystem's num to format it"
+        select type in 'ext2' "ext3" "ext4" "btrfs" "xfs" "jfs" "fat" "swap";do
+            case $type in
+                "ext2")
+                    mkfs.ext2 $OTHER
+                    break
+                ;;
+                "ext3")
+                    mkfs.ext3 $OTHER
+                    break
+                ;;
+                "ext4")
+                    mkfs.ext4 $OTHER
+                    break
+                ;;
+                "btrfs")
+                    mkfs.btrfs $OTHER -f
+                    break
+                ;;
+                "xfs")
+                    mkfs.xfs $OTHER -f
+                    break
+                ;;
+                "jfs")
+                    mkfs.jfs $OTHER
+                    break
+                ;;
+                "fat")
+                    mkfs.fat -F32 $OTHER
+                    break
+                ;;
+                "swap")
+                    swapoff $OTHER > /dev/null 2>&1
+                    mkswap $OTHER -f
+                    break
+                ;;
+                *)
+                    color red "Error ! Please input the num again"
+                ;;
+            esac
+        done
+    fi
+
+    if [ "$other" == "/swap" ];then
+        swapon $OTHER
+    else
+        umount $OTHER > /dev/null 2>&1
+        mkdir /mnt$other
+        mount $OTHER /mnt$other
+    fi
+}
+
+
+
+prepare(){
+    fdisk -l
+    color green "Do you want to adjust the partition ? y)yes ENTER)no"
+    read tmp
+    if [ "$tmp" == y ];then
+        color green "Input the disk (/dev/sdX)"
+        read TMP
+        gdisk $TMP
+    fi
+    color green "Input the ROOT(/) mount point:"
+    read ROOT
+    color green "Format it ? y)yes ENTER)no"
+    read tmp
+    if [ "$tmp" == y ];then
+        umount $ROOT > /dev/null 2>&1
+        color green "Input the filesystem's num to format it"
+        select type in "ext4" "btrfs" "xfs" "jfs";do
+            umount $ROOT > /dev/null 2>&1
+            if [ "$type" == "btrfs" ];then
+                mkfs.$type $ROOT -f
+            elif [ "$type" == "xfs" ];then
+                mkfs.$type $ROOT -f
+            else
+                mkfs.$type $ROOT
+            fi
+            break
+        done
+    fi
+    mount $ROOT /mnt
+    color green "Do you have another mount point ? if so please input it, such as : /boot /home and swap or just ENTER to skip"
+    read other
+    while [ "$other" != '' ];do
+        partition $other
+        color green "Still have another mount point ? input it or just ENTER"
+        read other
+    done
+}
+
+
+
+main(){
+    prepare
+    
+done
+}
+
+
+
+#read -p "enter your drive for making partition: " DRIVE
+#gdisk /dev/$DRIVE
+
+lsblk
+sleep 12
+
+read -p "what is your ESP partition? " ESP
+read -p "what is your /boot partition? " BOOT
+read -p "what is your /lvm partition? " CRYPTLVM
+
+#mkfs.fat -F32 /dev/$ESP
+
+# Create crypted /boot container   ###
+cryptsetup luksFormat /dev/$BOOT
+cryptsetup open /dev/$BOOT cryptboot
+mkfs.ext3 /dev/mapper/cryptboot
+
+# Create crypted LVM with /root and swap  ###
+cryptsetup luksFormat --type luks2 -c aes-xts-plain64 -h sha512 -s 512 --keyfile-size 512 /dev/$CRYPTLVM
+cryptsetup luksOpen /dev/$CRYPTLVM cryptlvm
+pvcreate /dev/mapper/cryptlvm
+vgcreate vg0 /dev/mapper/cryptlvm
+#lvcreate -L 16G vg0 -n swap
+lvcreate -L 40G vg0 -n root
+lvcreate -l 100%FREE vg0 -n home
+mkfs.btrfs -L root /dev/mapper/vg0-root
+mkfs.xfs /dev/mapper/vg0-home
+#mkswap /dev/mapper/vg0-swap
+
+
+# Mount
+#swapon /dev/mapper/vg0-swap
+mount /dev/mapper/vg0-root /mnt
+mkdir -p /mnt/{home,boot,boot/efi}
+mount /dev/mapper/vg0-home /mnt/home
+mount /dev/mapper/cryptboot /mnt/boot
+mount /dev/sda1 /mnt/boot/efi
+
+# Check whether /mnt is used as mountpoint?
+mountpoint -q /mnt
+if [ $? == 0 ];then
+	echo -e "${green}Detected /mnt as mountpoint \n"
+else
+	echo -e "${red}Can't detect /mnt as mountpoint!"
+	exit 1
+fi
+
+
+# Install system
+pacstrap /mnt base base-devel btrfs-progs grub-efi-x86_64 vim git dosfstools os-prober efibootmgr dialog wpa_supplicant nano
+
+# Generate fstab with device UUID : you can edit it in /etc/fstab
+genfstab -pU /mnt >> /mnt/etc/fstab && cat /mnt/etc/fstab
+sleep 10
+
+# Download auto_chroot script or check it existence
+if [ -e ./auto_chroot ];then
+  cp ./auto_chroot /mnt/tmp/auto_chroot
+elif [[ $(ping -c 2 google.com) ]];then
+	echo -e "${purple}Downloading auto_chroot script from raw.githubusercontent.com/pejmanrezai/arch-installation/master/auto_chroot in ${green}/mnt/tmp/auto_chroot${colorOff}" 
+	sleep 3
+	curl -s -o /mnt/tmp/auto_chroot https://raw.githubusercontent.com/pejmanrezai/arch-installation/master/auto_chroot
+	chmod +x /mnt/tmp/auto_chroot
+fi
+
+
+# Change root to /mnt
+echo -e "${green}Changing root${colorOff}\n"
+chroot /mnt
