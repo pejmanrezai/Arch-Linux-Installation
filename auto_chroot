@@ -1,0 +1,573 @@
+#!/usr/bin/env bash
+
+# Define colors
+# Reset
+colorOff='\033[0m'       # Text Reset
+# Regular Colors
+red='\033[0;31m'          # Red
+green='\033[0;32m'        # Green
+
+# Export locale
+export LC_ALL=C
+
+# Check you are in chroot or not!                                                                     
+if [ "$(stat -c %d:%i /)" != "$(stat -c %d:%i /proc/1/root/.)" ]; then                                
+  echo -e "${green}Chroot detected${colorOff} \n"                                                                              
+else                                                                                                  
+  echo -e "${red}You aren't in chroot mode . exiting...${colorOff}\n"                                                       
+  exit                                                                                                
+fi 
+
+# Check if user was root continue the script
+if [[ $( id -u ) != 0 ]];then
+     echo -e "\n${red}Can't install without root user permissions \n exiting${colorOff}"
+     exit
+fi
+
+
+clear
+
+
+# Check the internet connection : you should be ONLINE
+echo -e "\nChecking internet connection...."
+ping_counter=0
+while [ 1 ];do
+    if [[ ! $( ping -c 3 8.8.8.8 ) ]];then
+        echo  -e "${red}Connection is not stable .... \n Check your connection...${colorOff}"
+        sleep 5
+        ((ping_counter++))
+        echo $ping_counter
+        if [ "$ping_counter" == "4" ];then
+          echo "${red}Exiting...${colorOff}"  
+          exit
+        fi
+    else
+        echo -e "${green}Connection established! ${colorOff}\n"
+       break
+      fi
+done
+
+# Set password for root user
+echo -e "${green}Set a PASSWORD for root user :${colorOff} \n "
+while [ 1 ]; do
+  passwd   
+  if [ ! $? == "0" ];then
+      clear
+      echo -e "${green}Set a PASSWORD for root user : ${colorOff}\n"
+      passwd
+    else
+      break
+    fi
+  done
+
+  
+  
+# Create a normal user
+read -p  "Please enter a USERNAME : " USER_NAME_INPUT
+UNAME=$(echo $USER_NAME_INPUT | tr '[:upper:]' '[:lower:]')
+useradd -m -g users -G wheel,storage,power $UNAME
+
+
+# Set password for new normal user
+echo -e "${green}Set a PASSWORD for $UNAME :${colorOff} "
+while [ 1 ]; do
+  passwd $UNAME
+    if [ ! $? == "0" ];then
+      clear
+      echo -e "${green}Set a PASSWORD for $UNAME :${colorOff} \n"
+      passwd $UNAME
+    else
+      break
+    fi
+  done
+clear
+
+
+
+config_timezone(){
+    color yellow "Please choose your locale time"
+    select TIME in `ls /usr/share/zoneinfo`;do
+        if [ -d "/usr/share/zoneinfo/$TIME" ];then
+            select time in `ls /usr/share/zoneinfo/$TIME`;do
+                ln -sf /usr/share/zoneinfo/$TIME/$time /etc/localtime
+                break
+            done
+        else
+            ln -sf /usr/share/zoneinfo/$TIME /etc/localtime
+            break
+        fi
+        break
+    done
+}
+
+config_time_mode(){
+    select TIMESYNCMODE in "HW Clock" "UTC";do
+    case $TIMESYNCMODE in
+            "HW clock")
+                timedatectl set-local-rtc 1 --adjust-system-clock
+                break
+            ;;
+            "UTC")
+                hwclock --systohc --utc
+                break
+    done
+}
+
+clear
+
+# Set hostname for new system
+echo -e "${green}Setting hostname${colorOff} \n"
+read -p "Please enter your HOSTNAME : " HOST_NAME_INPUT
+echo "$HOST_NAME_INPUT" > /etc/hostname
+
+# Set locale for new system
+echo -e "${green}Setting locale${colorOff} \n"
+sed -i 's/#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/g' /etc/locale.gen
+locale-gen
+locale > /etc/locale.conf
+
+# Add permission for wheel users to run commands with sudo
+echo -e "${green}Editing /etc/sudoers (let wheel users to execute sudo!)${colorOff} \n"
+sed -i 's/# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/g' /etc/sudoers
+sed -i 's/# %wheel ALL=(ALL) NOPASSWD: ALL/%wheel ALL=(ALL) NOPASSWD: ALL/g' /etc/sudoers
+clear
+
+# Add needed modules to initcpio                        ###btrfs.fsck
+echo "Editing /etc/mkinitcpio.conf and adding needed modules"
+sed -i 's/MODULES=()/MODULES=(btrfs)/g' /etc/mkinitcpio.conf
+sed -i 's/BINARIES=()/BINARIES=(btrfs)/g' /etc/mkinitcpio.conf
+sed -i 's/HOOKS=(base udev autodetect modconf filesystems keyboard fsck)/HOOKS=(base udev autodetect modconf block keymap encrypt lvm2 btrfs resume filesystems keyboard fsck)/g' /etc/mkinitcpio.conf
+### (1) some said btrfs before filesystems.. (2) some pages told to replace fsck with btrfs and (3) also some said to add btrfsck to Binaries() --> HOOKS(....btrfs) Binaries(btrfsck) together. i use first to test.
+
+# Make initramfs
+echo -e "${green}Making initramfs${colorOff} \n"
+read -p "Which KERNEL did you installed(linux or linux-zen or linux-hardened)? (Default = linux) : "  KERNEL_TYPE_INPUT
+if [[ "$KERNEL_TYPE_INPUT" !=  "linux" &&  ! -z "$KERNEL_TYPE_INPUT" ]]; then
+    mkinitcpio -p $KERNEL_TYPE_INPUT
+else
+    mkinitcpio -p linux
+fi
+
+# Install grub bootloader
+echo -e "${green}Start installing BootLoader(grub) ${colorOff}\n"
+if [ -d "/sys/firmware/efi" ]; then
+    if [ -d "/boot/efi" ]; then
+       echo -e "${green}efi partition detected !${colorOff}\n"
+       grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ArchLinux --recheck --debug --force
+    elif [ -d "/boot/EFI" ]; then
+      echo -e "${green}EFI partition detected !${colorOff}\n"
+      grub-install --target=x86_64-efi --efi-directory=/boot/EFI --bootloader-id=ArchLinux --recheck --debug --force
+      else
+        while [ 1 ]; do
+            read -p "Where is esp (EFI) partition mounted (e.g.: /boot , /boot/esp) ? : " EFI_MOUNTPOINT
+            echo -e "${green}EFI partition is $EFI_MOUNTPOINT${colorOff}"
+            if [ -d "$EFI_MOUNTPOINT" ];then
+              grub-install --target=x86_64-efi --efi-directory=$EFI_MOUNTPOINT --bootloader-id=ArchLinux --recheck --debug --force
+              break
+            else
+              echo -e "${red}You entered wrong EFI MOUNTPOINT ${colorOff}\n"
+            fi
+          done
+        fi
+  else
+    echo -e "${green}Legacy mode detected... !${colorOff}\n"
+    read -p "On which device you want to  install BOOTLOADER ? (Default = /dev/sda) : " DEVICE_INPUT
+    if [[ "$DEVICE_INPUT" != "/dev/sda" &&  ! -z "$DEVICE_INPUT" ]]; then
+        grub-install --target=i386-pc --recheck $DEVICE_INPUT
+        else
+            grub-install --target=i386-pc --recheck /dev/sda
+    fi
+  fi
+
+# Editing /etc/default/grub
+echo "Editing /etc/default/grub"
+sed -i 's/#GRUB_ENABLE_CRYPTODISK=y/GRUB_ENABLE_CRYPTODISK=y/g' /etc/default/grub
+sed -i 's/^GRUB_CMDLINE_LINUX=""/GRUB_CMDLINE_LINUX="cryptdevice=UUID=$(blkid /dev/$CRYPTLVM -s UUID -o value):cryplvm"/g' /etc/default/grub
+
+
+# Create grub config
+echo -e "${green}Making GRUB CONFIG FILE ${colorOff}\n"
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# It is necessary for mounting /boot without password request
+dd bs=512 count=10 if=/dev/urandom of=/etc/key
+chmod 400 /etc/key
+cryptsetup luksAddKey /dev/$BOOT /etc/key
+echo "cryptboot /dev/disk/by-uuid/$(blkid /dev/$BOOT -s UUID -o value) /etc/key luks" >> /etc/crypttab
+
+# Some additional security
+chmod 700 /boot
+chmod 700 /etc/iptables
+
+################################################ switching to normal user ##################################
+
+# switch user to normal user for installing packages        
+su $UNAME
+
+# Check if user was normal user to continue the script
+if [[ $( id -u ) != 1000 ]];then
+     echo -e "\n${red}Can't install without switching to normal user \n exiting${colorOff}"
+     exit
+fi
+
+# Provide pacman for first use :      
+sudo pacman -Sy
+sudo pacman-key --init
+sudo pacman-key --populate archlinux
+
+sudo sed -i 's/#TotalDownload/TotalDownload/g' /etc/pacman.conf
+
+install(){
+
+    color green "Please choose your country (for Generate the pacman mirror list"
+    select COUNTRY in "AU" "AT" "BD" "BY" "BE" "BA" "BR" "BG" "CA" "CL" "CN" "CO" "HR" "CZ" "DK" "EC" "FI" "FR" "DE" "GR" "HK" "HU" "IS" "IN" "ID" "IR" "IE" "IL" "IT" "JP" "KZ" "LV" "LT" "LU" "MK" "MX" "AN" "NC" "NZ" "NO" "PH" "PL" "PT" "QA" "RO" "RU" "RS" "SG" "SK" "SI" "ZA" "KR" "ES" "SE" "CH" "TW" "TH" "TR" "UA" "GB" "US" "VN";do
+        mv /etc/pacman.d/mirrorlist /etc/mirrorlist.bak
+        color green "Generating mirror list , Please wait"
+        wget https://www.archlinux.org/mirrorlist/\?country=$COUNTRY\&protocol=https -O /etc/pacman.d/mirrorlist.new
+        if (! grep -q https /etc/pacman.d/mirrorlist.new);then
+            wget https://www.archlinux.org/mirrorlist/\?country=$COUNTRY\&protocol=http -O /etc/pacman.d/mirrorlist.new
+        fi
+        sed -i 's/#Server/Server/g' /etc/pacman.d/mirrorlist.new
+        rm -f rankmirrors.sh
+        wget https://raw.githubusercontent.com/PejmanRezai/Arch-Linux-Installation/master/rankmirrors.sh && chmod +x rankmirrors.sh
+        bash rankmirrors.sh -n 3 /etc/pacman.d/mirrorlist.new > /etc/pacman.d/mirrorlist
+        chmod +r /etc/pacman.d/mirrorlist
+	break
+done
+
+    color red "Please choose the mirror you want to use by input the num"
+    select mirror in "`tail -n 1 /etc/pacman.d/mirrorlist`" "`tail -n 2 /etc/pacman.d/mirrorlist | head -n 1`" "`tail -n 3 /etc/pacman.d/mirrorlist | head -n 1`";do
+        echo $mirror > /etc/pacman.d/mirrorlist
+    break
+    done
+
+}
+
+
+
+# Installing favorite apps
+sudo pacman -S wget zsh zsh-theme-powerlevel9k firefox git vim intel-ucode xf86-video-vesa mesa xorg xf86-input-libinput xorg-xinit xf86-input-synaptics gst-libav gst-plugins-bad gst-plugins-good gst-plugins-ugly gst-plugins-base gst-plugins-base-libs gstreamer alsa-plugins alsa-utils alsa-oss pulseaudio arc-kde papirus-icon-theme ffmpegthumbs firefox ntfs-3g p7zip zip unzip unrar libmtp mtpfs gvfs-mtp vlc clementine networkmanager telegram-desktop gparted qbittorrent uget gufw gimp pakku tor klavaro torsocks neofetch atom dkms virtualbox-host-modules-arch conky-manager clamav clamtk libreoffice-fresh redshift latte-dock --needed
+
+
+install_graphic(){
+    color yellow "What is your video graphic card?"
+    select GPU in "Intel" "Nvidia" "Intel and Nvidia" "Intel and NVIDIA open source driver" "AMD";do
+        case $GPU in
+            "Intel")
+                sudo pacman -S --noconfirm --needed xf86-video-intel -y
+                break
+            ;;
+            "Nvidia")
+                color yellow "Version of nvidia-driver to install"
+                select NVIDIA in "GeForce-8 and newer" "GeForce-6/7" "Older";do
+                    case $NVIDIA in
+                        "GeForce-8 and newer")
+                            sudo pacman -S --noconfirm --needed nvidia -y
+                            break
+                        ;;
+                        "GeForce-6/7")
+                            sudo pacman -S --noconfirm --needed nvidia-304xx -y
+                            break
+                        ;;
+                        "Older")
+                            sudo pacman -S --noconfirm --needed nvidia-340xx -y
+                            break
+                        ;;
+                        *)
+                            color red "Error ! Please input the correct num"
+                        ;;
+                    esac
+                done
+                break
+            ;;
+            "Intel and Nvidia")
+                sudo pacman -S --noconfirm bumblebee -y
+                sudo systemctl enable bumblebeed
+                color yellow "Version of nvidia-driver to install"
+                select NVIDIA in "GeForce-8 and newer" "GeForce-6/7" "Older";do
+                    case $NVIDIA in
+                        "GeForce-8 and newer")
+                            sudo pacman -S --noconfirm --needed nvidia -y
+                            break
+                        ;;
+                        "GeForce-6/7")
+                            sudo pacman -S --noconfirm --needed nvidia-304xx -y
+                            break
+                        ;;
+                        "Older")
+                            sudo pacman -S --noconfirm --needed nvidia-340xx -y
+                            break
+                        ;;
+                        *)
+                            color red "Error ! Please input the correct num"
+                        ;;
+                    esac
+                done
+                break
+            ;;
+            "Intel and NVIDIA open source driver")
+                sudo pacman -S --noconfirm --needed bumblebee xf86-video-intel xf86-video-nouveau -y
+                sudo systemctl enable bumblebeed
+                break   
+            ;;
+            "AMD")
+                sudo pacman -S --noconfirm --needed xf86-video-ati -y
+                break
+            ;;
+            *)
+                color red "Error ! Please input the correct num"
+            ;;
+        esac
+    done
+}
+
+
+install_desktop(){
+    color yellow "Choose the desktop you want to use"
+    select DESKTOP in "KDE" "Gnome" "Lxde" "Lxqt" "Mate" "Xfce" "Deepin" "Budgie" "Cinnamon";do
+        case $DESKTOP in
+            "KDE")
+                sudo pacman -S plasma-nm plasma-desktop kmix sddm spectacle breeze-gtk kde-gtk-config gwenview okular powerdevil libappindicator-gtk2 libappindicator-gtk3 ksysguard kate ark sddm-kcm konsole dolphin kdegraphics-thumbnailers kdesdk-thumbnailers pavucontrol --needed
+                sudo systemctl enable sddm
+                ######################## konsole config ##########################################
+                touch ~/.local/share/konsole/myprofile.profile
+                echo "[Appearance]
+                ColorScheme=Linux
+                Font=Meslo LG M for Powerline,15,-1,5,50,0,0,0,0,0,Regular
+                UseFontLineChararacters=true
+
+                [General]
+                Name=myprofile
+                Parent=FALLBACK/
+
+                [Keyboard]
+                KeyBindings=default" >> ~/.local/share/konsole/myprofile.profile
+
+                touch ~/.config/konsolerc.desktop
+                echo "[Desktop Entry]
+                DefaultProfile=myprofile.profile
+
+                [DownloadDialog Settings]
+                Height 1080=494
+                Width 1920=700
+
+                [Favorite Profiles]
+                Favorites=
+
+                [MainWindow]
+                Height 1080=720
+                State=AAAA/wAAAAD9AAAAAAAABH4AAAKyAAAABAAAAAQAAAAIAAAACPwAAAAA
+                ToolBarsMovable=Disabled
+                Width 1920=1150" > ~/.config/konsolerc.desktop
+                ###################################################################################
+
+                ################################### KDE global config #############################
+                touch ~/.config/kdeglobals
+                echo "[General]
+                ColorScheme=Breeze Dark
+                Name=Breeze Dark
+                XftHintStyle=
+                XftSubPixel=
+                dbfile=
+                fixed=Hack,9,-1,5,50,0,0,0,0,0
+                font=Noto Sans,10,-1,5,50,0,0,0,0,0
+                menuFont=Noto Sans,10,-1,5,50,0,0,0,0,0
+                shadeSortColumn=true
+                smallestReadableFont=Noto Sans,8,-1,5,50,0,0,0,0,0
+                toolBarFont=Noto Sans,10,-1,5,50,0,0,0,0,0
+                widgetStyle=Breeze
+
+                [Icons]
+                Theme=Papirus
+
+                [KDE]
+                ColorScheme=Breeze
+                LookAndFeelPackage=org.kde.breezedark.desktop
+                SingleClick=false
+                contrast=4
+                widgetStyle=Breeze" >> ~/.config/kdeglobals
+                ##################################################################################
+                break
+            ;;
+            "Gnome")
+                sudo pacman -S gnome gnome-terminal --needed
+                sudo systemctl enable gdm
+                break
+            ;;
+            "Lxde")
+                sudo pacman -S lxde lightdm lightdm-gtk-greeter --needed
+                sudo systemctl enable lightdm
+                break
+            ;;
+            "Lxqt")
+                sudo pacman -S lxqt lightdm lightdm-gtk-greeter --needed
+                sudo systemctl enable lightdm
+                break
+            ;;
+            "Mate")
+                sudo pacman -S mate mate-extra mate-terminal lightdm lightdm-gtk-greeter --needed
+                sudo systemctl enable lightdm
+                break
+            ;;
+            "Xfce")
+                sudo pacman -S xfce4 xfce4-goodies xfce4-terminal lightdm lightdm-gtk-greeter --needed
+                sudo systemctl enable lightdm
+                break
+            ;;
+            "Deepin")
+                sudo pacman -S deepin deepin-extra deepin-terminal lightdm lightdm-gtk-greeter --needed
+                sudo systemctl enable lightdm
+                sed -i '108s/#greeter-session=example-gtk-gnome/greeter-session=lightdm-deepin-greeter/' /etc/lightdm/lightdm.conf
+                break
+            ;;
+            "Budgie")
+                sudo pacman -S budgie-desktop gnome-terminal lightdm lightdm-gtk-greeter --needed
+                sudo systemctl enable lightdm
+                break
+            ;;
+            "Cinnamon")
+                sudo pacman -S cinnamon gnome-terminal lightdm lightdm-gtk-greeter --needed
+                sudo systemctl enable lightdm
+                break
+            ;;
+            *)
+                color red "Error ! Please input the correct num"
+            ;;
+        esac
+    done
+}
+
+############################# installing pakku ###############################
+git clone https://aur.archlinux.org/pakku.git
+cd pakku
+makepkg -si && echo "installed pakku"
+cd
+clear
+
+
+############################ installing grub2-theme-arch-leap ######################
+git clone https://aur.archlinux.org/grub2-theme-arch-leap.git
+cd grub2-theme-arch-leap
+makepkg -si && echo "Installed grub2-theme-arch-leap"
+cd
+clear
+
+# Editing /etc/default/grub
+sudo sed -i 's/#GRUB_THEME=".*"/GRUB_THEME="/boot/grub/themes/arch-leap/theme.txt"/g' /etc/default/grub
+sudo grub-mkconfig -o /boot/grub/grub.cfg
+
+############################ installing safeeyes #######################
+git clone https://aur.archlinux.org/safeeyes.git
+cd safeeyes
+makepkg -si && echo "installed safeeyes"
+cd
+clear
+
+########################## redshift config #############################
+touch ~/.config/redshift.conf
+echo "[redshift]
+temp-day=6500
+temp-night=3900
+transition=1
+gamma=0.8
+adjustment-method=randr
+location-provider=manual
+
+[manual]
+lat=36.26
+lon=50.00
+
+[randr]
+screen=0" >> ~/.config/redshift.conf
+######################################################################
+
+ln -s /usr/share/applications/redshift-gtk.desktop redshift-gtk.desktop && mv redshift-gtk.desktop ~/.config/autostart
+
+########################### zsh config #################################
+touch ~/.zshrc
+echo "export TERM='xterm-256color'
+export LANG='en_US.UTF-8'
+source /usr/share/zsh-theme-powerlevel9k/powerlevel9k.zsh-theme
+alias ls='ls --color=auto'
+alias tor='sudo systemctl start tor'
+alias rt='sudo systemctl restart tor'
+alias st='sudo systemctl stop tor'
+alias stt='systemctl status tor'
+alias syu='sudo pacman -Syu'
+alias sy='sudo pacman -Sy'
+##############################################################################
+
+# History Configuration
+
+##############################################################################
+
+HISTSIZE=5000 #How many lines of history to keep in memory
+
+HISTFILE=~/.zsh_history #Where to save history to disk
+
+SAVEHIST=5000 #Number of history entries to save to disk
+
+HISTDUP=erase #Erase duplicates in the history file
+
+setopt appendhistory #Append history to the history file (no overwriting)
+
+setopt sharehistory #Share history across terminals
+
+setopt incappendhistory #Immediately append to the history file, not just when a term is killed" >> ~/.zshrc
+
+######################## end of zsh config #########################################
+
+
+#sudo systemctl enable sddm.service
+sudo systemctl enable NetworkManager.service
+
+############################################### installing persian fonts using a script made by github.com/fzerorubigd/persian-fonts-linux/master/farsifonts.sh thanks to him ##########
+
+install_persian_fonts(){
+    wget https://github.com/fzerorubigd/persian-fonts-linux/blob/master/farsifonts.sh && chmod +x farsifonts.sh
+    bash farsifonts.sh
+done
+}
+
+################################### making default font config ####################
+touch .fonts.conf
+echo "<?xml version='1.0'?>
+<!DOCTYPE fontconfig SYSTEM 'fonts.dtd'>
+<fontconfig>
+ <match target="pattern">
+  <test name="family" qual="any">
+   <string>sans-serif</string>
+  </test>
+  <edit name="family" mode="assign" binding="same">
+   <string>Vazir</string>
+  </edit>
+ </match>
+ <dir>~/.fonts</dir>
+</fontconfig>" >> .fonts.conf
+#################################################################################
+
+############################################### making swap file, supported by btrfs from linux 5.0 kernel #######################################
+
+sudo fallocate -l 6G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile && echo "making swap file completed!"
+sudo echo "/swapfile    none    swap    sw  0 0" >> /etc/fstab
+sudo echo "vm.swappiness=40" > /etc/sysctl.d/99-sysctl.conf
+sudo sed -i 's#GRUB_CMDLINE_LINUX="cryptdevice=UUID=$(blkid /dev/$CRYPTLVM -s UUID -o value):cryplvm"#GRUB_CMDLINE_LINUX="cryptdevice=UUID=$(blkid /dev/$CRYPTLVM -s UUID -o value):cryplvm resume=/swapfile"#g' /etc/default/grub
+sudo grub-mkconfig -o /boot/grub/grub.cfg
+
+##################################################################################################################################################
+
+
+# remove permission for wheel users to run sudo commands without password
+sudo sed -i 's/%wheel ALL=(ALL) NOPASSWD: ALL/# %wheel ALL=(ALL) NOPASSWD: ALL/g' /etc/sudoers
+
+chsh -s $(which zsh) 
+
+echo -e "${green}Chroot jobs Done! ${colorOff}\n"
+
+logout
+exit
+swapoff -a
+umount -R /mnt
+shutdown -r now
